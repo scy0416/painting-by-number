@@ -127,7 +127,7 @@ if image:
 
     with col1:
         st.subheader("원본 이미지")
-        st.image(raw, use_container_width=True)
+        st.image(raw)
 
     with col2:
         st.subheader("SVG 미리보기")
