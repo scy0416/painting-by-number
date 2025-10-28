@@ -1,3 +1,5 @@
+import io
+from PIL import Image, ImageOps
 import streamlit as st
 from vtracer import convert_raw_image_to_svg
 
@@ -108,8 +110,23 @@ if image:
     # 여기서 변환 진행
     raw = image.read()
 
+    img = Image.open(io.BytesIO(raw))
+    img = ImageOps.exif_transpose(img)
+
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA" if img.mode == "LA" else "RGB")
+
+    MAX_SIDE = 1000
+    img.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
+
+    buf = io.BytesIO()
+
+    img.save(buf, format="PNG")
+    resized_bytes = buf.getvalue()
+
     svg_bytes = convert_raw_image_to_svg(
-        img_bytes=raw,
+        #img_bytes=raw,
+        img_bytes=resized_bytes,
         colormode=colormode,
         hierarchical=hierarchical,
         mode=mode,
