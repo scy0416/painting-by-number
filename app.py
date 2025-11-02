@@ -1,4 +1,6 @@
 import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_OPENGL", "software")
 import io
 from PIL import Image, ImageOps
 import streamlit as st
@@ -8,9 +10,6 @@ from sklearn.cluster import KMeans
 from PySide6.QtGui import QImage, QPainter, QGuiApplication
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtCore import QSize, QByteArray, QRectF, Qt, QBuffer, QIODevice
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QT_OPENGL", "software")
 
 #_app = QGuiApplication.instance() or QGuiApplication([])
 
