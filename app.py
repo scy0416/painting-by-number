@@ -4,7 +4,6 @@ import streamlit as st
 from vtracer import convert_raw_image_to_svg
 import numpy as np
 from sklearn.cluster import KMeans
-import cv2
 from PySide6.QtGui import QImage, QPainter, QGuiApplication
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtCore import QSize, QByteArray, QRectF, Qt, QBuffer, QIODevice
