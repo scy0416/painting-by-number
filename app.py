@@ -1,17 +1,14 @@
-import os
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QT_OPENGL", "software")
 import io
 from PIL import Image, ImageOps
 import streamlit as st
 from vtracer import convert_raw_image_to_svg
 import numpy as np
 from sklearn.cluster import KMeans
-from PySide6.QtGui import QImage, QPainter, QGuiApplication
-from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtCore import QSize, QByteArray, QRectF, Qt, QBuffer, QIODevice
+import pandas as pd
 
-#_app = QGuiApplication.instance() or QGuiApplication([])
+# NEW: CairoSVG
+# pip install cairosvg
+import cairosvg
 
 st.set_page_config(layout="wide")
 
@@ -103,7 +100,6 @@ image = st.file_uploader(" ", label_visibility="collapsed", type=["jpg", "jpeg",
 
 if image:
     colormode = st.session_state["colormode"]
-    #hierarchical = st.session_state["hierarchical"]
     mode = st.session_state["mode"]
     filter_speckle = st.session_state["filter_speckle"]
     color_precision = st.session_state["color_precision"]
@@ -116,27 +112,26 @@ if image:
 
     raw = image.read()
 
-    img = Image.open(io.BytesIO(raw))
-    img = ImageOps.exif_transpose(img)
+    pil_in = Image.open(io.BytesIO(raw))
+    pil_in = ImageOps.exif_transpose(pil_in)
 
-    if img.mode not in ("RGB", "RGBA"):
-        img = img.convert("RGBA" if img.mode == "LA" else "RGB")
+    if pil_in.mode not in ("RGB", "RGBA"):
+        pil_in = pil_in.convert("RGBA" if pil_in.mode == "LA" else "RGB")
 
     MAX_SIDE = 1000
-    img.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
+    pil_in.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
 
-    #st.write(np.array(img).shape)
-    h, w, c = np.array(img).shape
+    h, w = pil_in.height, pil_in.width
 
     buf = io.BytesIO()
-
-    img.save(buf, format="PNG")
+    pil_in.save(buf, format="PNG")
     resized_bytes = buf.getvalue()
 
+    # vtracer: 래스터 -> SVG
     svg_bytes = convert_raw_image_to_svg(
         img_bytes=resized_bytes,
         colormode=colormode,
-        hierarchical="cutoff",
+        hierarchical="cutoff",  # 라이브러리에 따라 'cutout'이 맞을 수 있음. 문서 확인 요망.
         mode=mode,
         filter_speckle=int(filter_speckle),
         color_precision=int(color_precision),
@@ -148,61 +143,40 @@ if image:
         path_precision=int(path_precision),
     )
 
-    svg_ba = QByteArray(svg_bytes)
-    renderer = QSvgRenderer(svg_ba)
-    if not renderer.isValid():
-        st.error("SVG 렌더러가 invalid 입니다. (SVG 생성 파라미터 또는 바이트 확인)")
-        st.stop()
+    # --- 여기부터 CairoSVG로 SVG -> PNG (메모리 변환) ---
+    png_bytes = cairosvg.svg2png(
+        bytestring=svg_bytes,
+        output_width=w,
+        output_height=h,
+        # scale=1.0,                 # 필요시 배율로 조정
+        # background_color='transparent',
+        # dpi=96
+    )
 
-    size = QSize(w, h)
-    qimg = QImage(size, QImage.Format_ARGB32_Premultiplied)
-    qimg.fill(Qt.transparent)
+    # 바로 표시
+    st.image(png_bytes)
 
-    p = QPainter(qimg)
-    try:
-        renderer.render(p, QRectF(0, 0, qimg.width(), qimg.height()))
-    finally:
-        p.end()
-
-    # QBuffer로 PNG 인메모리 인코딩 → 바로 표시
-    png_ba = QByteArray()
-    buf = QBuffer(png_ba)
-    buf.open(QIODevice.WriteOnly)
-    qimg.save(buf, "PNG")  # ← qimg는 QImage 객체, .data 쓰지 마세요
-    buf.close()
-
-    #st.image(png_ba.data())
-
-    pil_png = Image.open(io.BytesIO(png_ba.data()))
-    pil_png.load()  # 지연 로딩 방지(선택)
-    #st.image(pil_png)
-
+    # PIL 이미지로 열어 후처리
+    pil_png = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     np_img = np.array(pil_png)
     h, w, c = np_img.shape
     pixels = np_img.reshape(-1, c)
 
-    kmeans = KMeans(n_clusters=st.session_state["num_colors"], random_state=42)
+    # KMeans 팔레트 양자화
+    kmeans = KMeans(n_clusters=st.session_state["num_colors"], random_state=42, n_init="auto")
     labels = kmeans.fit_predict(pixels)
     palette = np.round(kmeans.cluster_centers_).astype(np.uint8)
     new_pixels = palette[labels].reshape(h, w, c)
 
-    img = Image.fromarray(new_pixels)
+    result_img = Image.fromarray(new_pixels)
+    st.image(result_img, caption="양자화 결과")
 
-    st.image(img)
-
-    # 여기에서 최종 이미지의 색상 개수 계산
-    # 알파 채널이 있을 수 있으니 RGB만 써서 색상 수를 셉니다.
-    use_alpha = False  # 알파까지 구분하려면 True로 변경
-    if use_alpha and new_pixels.shape[2] == 4:
-        color_space = new_pixels[:, :, :4]  # RGBA
-    else:
-        color_space = new_pixels[:, :, :3]  # RGB
-
-    # (고해상도 대비) 고유색/카운트 계산
+    # 최종 색상 개수 계산 (RGB 기준)
+    use_alpha = False
+    color_space = new_pixels[:, :, :4] if (use_alpha and new_pixels.shape[2] == 4) else new_pixels[:, :, :3]
     flat = color_space.reshape(-1, color_space.shape[2])
     unique_colors, counts = np.unique(flat, axis=0, return_counts=True)
 
-    # 결과 요약
     total_pixels = flat.shape[0]
     num_unique = unique_colors.shape[0]
     st.write(f"최종 고유 색상 수: **{num_unique}**")
@@ -210,17 +184,15 @@ if image:
 
     # 상위 n개 색상 (많이 쓰인 순)
     n_top = min(20, num_unique)
-    top_idx = np.argsort(-counts)[:n_top]  # 내림차순
+    top_idx = np.argsort(-counts)[:n_top]
     top_colors = unique_colors[top_idx]
     top_counts = counts[top_idx]
     top_ratios = top_counts / total_pixels
 
-    # 팔레트 미리보기 이미지 생성 (가로 스와치)
+    # 팔레트 미리보기
     swatch_h, swatch_w = 40, 60
     gap = 4
-    palette_img = np.ones(
-        (swatch_h, n_top * (swatch_w + gap) - gap, 3), dtype=np.uint8
-    ) * 255  # 흰 배경
+    palette_img = np.ones((swatch_h, n_top * (swatch_w + gap) - gap, 3), dtype=np.uint8) * 255
     for i, rgb in enumerate(top_colors[:, :3]):
         x0 = i * (swatch_w + gap)
         palette_img[:, x0:x0 + swatch_w, :] = rgb
@@ -228,8 +200,7 @@ if image:
     st.subheader("팔레트(상위 색상)")
     st.image(palette_img, caption="왼쪽부터 많이 쓰인 색")
 
-    # 색상 목록 + 비율 출력 (상위 n개)
-    st.write("상위 사용 색상 목록 (RGB, 점유율):")
+    # 색상 표
     rows = []
     for i, (rgb, cnt, ratio) in enumerate(zip(top_colors[:, :3], top_counts, top_ratios), start=1):
         rows.append({
@@ -241,13 +212,9 @@ if image:
             "ratio(%)": round(float(ratio * 100), 2),
             "hex": "#{:02X}{:02X}{:02X}".format(int(rgb[0]), int(rgb[1]), int(rgb[2])),
         })
-    # 간단 표로 표시
-    import pandas as pd
+    st.dataframe(pd.DataFrame(rows))
 
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
-
-    # (옵션) 결과 이미지/팔레트 다운로드 버튼
-    # PNG 바이트로 재인코딩
+    # 다운로드 버튼
     out_buf = io.BytesIO()
     Image.fromarray(new_pixels).save(out_buf, format="PNG")
     st.download_button(
