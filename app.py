@@ -2,6 +2,9 @@ import io
 from PIL import Image, ImageOps
 import streamlit as st
 from vtracer import convert_raw_image_to_svg
+import numpy as np
+from sklearn.cluster import KMeans
+import cv2
 
 st.set_page_config(layout="wide")
 
@@ -92,6 +95,10 @@ with st.expander("세부 조절"):
         st.write("- 값 ↓ → 더 단순화된 경로, 노드 적음")
         st.number_input(" ", 0, 100, 8, 1, label_visibility="collapsed", key="path_precision")
 
+st.subheader("색상 샘플링 순서")
+st.toggle("샘플림 후 벡터화", value=True, key="sampling_first")
+st.number_input(label="샘플링할 색상의 수", min_value=1, max_value=100, value=20, key="num_colors")
+
 st.subheader("이미지 입력")
 image = st.file_uploader(" ", label_visibility="collapsed", type=["jpg", "jpeg", "png"], accept_multiple_files=False, key="target_image")
 if image:
@@ -107,7 +114,6 @@ if image:
     splice_threshold = st.session_state["splice_threshold"]
     path_precision = st.session_state["path_precision"]
 
-    # 여기서 변환 진행
     raw = image.read()
 
     img = Image.open(io.BytesIO(raw))
@@ -119,13 +125,24 @@ if image:
     MAX_SIDE = 1000
     img.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
 
+    if st.session_state["sampling_first"]:
+        np_img = np.array(img)
+        h, w, c = np_img.shape
+        pixels = np_img.reshape(-1, c)
+
+        kmeans = KMeans(n_clusters=st.session_state["num_colors"], random_state=42)
+        labels = kmeans.fit_predict(pixels)
+        palette = np.round(kmeans.cluster_centers_).astype(np.uint8)
+        new_pixels = palette[labels].reshape(h, w, c)
+
+        img = Image.fromarray(new_pixels)
+
     buf = io.BytesIO()
 
     img.save(buf, format="PNG")
     resized_bytes = buf.getvalue()
 
     svg_bytes = convert_raw_image_to_svg(
-        #img_bytes=raw,
         img_bytes=resized_bytes,
         colormode=colormode,
         hierarchical=hierarchical,
@@ -140,25 +157,36 @@ if image:
         path_precision=int(path_precision),
     )
 
+    if not st.session_state["sampling_first"]:
+        np_img = np.array(img)
+        h, w, c = np_img.shape
+        pixels = np_img.reshape(-1, c)
+
+        kmeans = KMeans(n_clusters=st.session_state["num_colors"], random_state=42)
+        labels = kmeans.fit_predict(pixels)
+        palette = np.round(kmeans.cluster_centers_).astype(np.uint8)
+        new_pixels = palette[labels].reshape(h, w, c)
+
+        img = Image.fromarray(new_pixels)
+
     col1, col2 = st.columns(2, border=True)
 
     with col1:
         st.subheader("원본 이미지")
-        #st.image(raw)
         st.image(resized_bytes)
 
     with col2:
         st.subheader("SVG 미리보기")
-        # st.components.v1.html(
-        #     svg_bytes.decode("utf-8"),
-        #     height=600,
-        #     scrolling=True
-        # )
-        st.image(svg_bytes)
 
-        st.download_button(
-            "⬇️ SVG 다운로드",
-            data=svg_bytes,
-            file_name=(image.name.rsplit(".", 1)[0] + ".svg"),
-            mime="image/svg+xml"
-        )
+        if st.session_state["sampling_first"]:
+
+            st.image(svg_bytes)
+
+            st.download_button(
+                "⬇️ SVG 다운로드",
+                data=svg_bytes,
+                file_name=(image.name.rsplit(".", 1)[0] + ".svg"),
+                mime="image/svg+xml"
+            )
+        else:
+            st.image(img)
